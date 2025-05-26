@@ -1,9 +1,9 @@
 #ifndef CV_HPP
 #define CV_HPP
 
-#include "decision_tree.hpp"
-#include "datasets.hpp"
-#include "metrics.hpp"
+#include "../src/decision_tree.hpp"
+#include "../src/datasets.hpp"
+#include "../src/metrics.hpp"
 #include <vector>
 #include <string>
 #include <utility>
