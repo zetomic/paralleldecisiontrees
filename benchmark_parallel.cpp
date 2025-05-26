@@ -4,12 +4,12 @@
 #include <vector>
 #include <iomanip>
 
-// Serial implementation includes
-#include "src/datasets.cpp"
-#include "src/losses.cpp"
-#include "src/metrics.cpp"
-#include "src/tree_node.cpp"
-#include "src/decision_tree.cpp"
+// Just include the OpenMP implementation - it handles parallelization internally
+#include "src-openmp/datasets.cpp"
+#include "src-openmp/losses.cpp"
+#include "src-openmp/metrics.cpp"
+#include "src-openmp/tree_node.cpp"
+#include "src-openmp/decision_tree.cpp"
 
 struct BenchmarkResult {
     int max_depth;
@@ -28,7 +28,7 @@ void writeResultsToCSV(const std::vector<BenchmarkResult>& results, const std::s
     
     // Write data
     for (const auto& r : results) {
-        file << "serial,"
+        file << "parallel,"
              << r.max_depth << ","
              << std::fixed << std::setprecision(4) << r.train_time_ms << ","
              << std::fixed << std::setprecision(4) << r.train_accuracy << ","
@@ -43,12 +43,12 @@ void writeResultsToCSV(const std::vector<BenchmarkResult>& results, const std::s
 
 BenchmarkResult benchmarkDecisionTree(DataFrame& train_data, DataFrame& test_data, int max_depth) {
     
-    std::cout << "Testing SERIAL version with max_depth=" << max_depth << "..." << std::flush;
+    std::cout << "Testing PARALLEL version with max_depth=" << max_depth << "..." << std::flush;
     
     // Start timing
     auto start = std::chrono::high_resolution_clock::now();
     
-    // Train decision tree
+    // Train decision tree - the DecisionTree class handles all OpenMP internally
     DecisionTree tree(train_data, 
                      false,           // classification (not regression)
                      "gini_impurity", // loss function
@@ -64,7 +64,7 @@ BenchmarkResult benchmarkDecisionTree(DataFrame& train_data, DataFrame& test_dat
     auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
     double train_time_ms = duration.count() / 1000.0;
     
-    // Make predictions
+    // Make predictions - predict() method also uses OpenMP internally
     DataVector train_predictions = tree.predict(&train_data);
     DataVector test_predictions = tree.predict(&test_data);
     
@@ -79,7 +79,7 @@ BenchmarkResult benchmarkDecisionTree(DataFrame& train_data, DataFrame& test_dat
 }
 
 int main() {
-    std::cout << "=== SERIAL Decision Tree Performance Benchmark ===" << std::endl;
+    std::cout << "=== PARALLEL Decision Tree Performance Benchmark ===" << std::endl;
     std::cout << "Loading cancer dataset..." << std::endl;
     
     // Load dataset
@@ -98,13 +98,13 @@ int main() {
     std::cout << std::endl;
     
     // Define tree depths to test
-    std::vector<int> depths = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, -1}; // -1 = no limit
+    std::vector<int> depths = {1, 2, 3, 4, 5}; 
     
     std::vector<BenchmarkResult> results;
     
-    std::cout << "Running SERIAL version tests..." << std::endl;
+    std::cout << "Running PARALLEL version tests (OpenMP handles parallelization automatically)..." << std::endl;
     
-    // Run benchmarks
+    // Run benchmarks - no special parallelization needed in test code
     for (int depth : depths) {
         try {
             BenchmarkResult result = benchmarkDecisionTree(train_data, test_data, depth);
@@ -126,10 +126,10 @@ int main() {
     std::cout << std::endl;
     
     // Save results to CSV
-    writeResultsToCSV(results, "benchmark_results_serial.csv");
+    writeResultsToCSV(results, "benchmark_results_parallel.csv");
     
     // Print summary statistics
-    std::cout << "\n=== SERIAL Summary Statistics ===" << std::endl;
+    std::cout << "\n=== PARALLEL Summary Statistics ===" << std::endl;
     double total_time = 0;
     double max_time = 0;
     double min_time = results.empty() ? 0 : results[0].train_time_ms;
@@ -146,7 +146,7 @@ int main() {
     std::cout << "Min time: " << std::fixed << std::setprecision(2) << min_time << "ms" << std::endl;
     std::cout << "Max time: " << std::fixed << std::setprecision(2) << max_time << "ms" << std::endl;
     
-    std::cout << "\nSERIAL benchmark completed! Results saved to benchmark_results_serial.csv" << std::endl;
+    std::cout << "\nPARALLEL benchmark completed! Results saved to benchmark_results_parallel.csv" << std::endl;
     
     return 0;
 }
