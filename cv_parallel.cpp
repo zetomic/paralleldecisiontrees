@@ -57,8 +57,8 @@ std::vector<CVResult> testDatasetCV(const std::string& dataset_path, const std::
     CrossValidator cv(df, 4, 42, false);  // 4 folds, seed=42, classification
     
     // Define tree depths to test
-    std::vector<int> depths = {1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20};
-    
+    std::vector<int> depths = {1, 2, 3, 4, 5, 10, 15, 20, 50, 100, 200, 500};
+        
     std::vector<CVResult> results;
     
     // Run cross-validation benchmarks
