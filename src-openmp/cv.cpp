@@ -95,10 +95,12 @@ CVResult CrossValidator::validateSingleHyperparameter(const HyperparameterSet& p
     // Pre-allocate fold scores vector for thread safety
     std::vector<double> fold_scores(k_folds_, 0.0);
     
+    // Print parallel info before the parallel region
+    std::cout << " [Parallel CV: Starting parallel fold processing]" << std::flush;
+    
     // PARALLEL FOLDS: Each fold trains on a separate thread
-    int fold;
-    #pragma omp parallel for private(fold) shared(folds, fold_scores, params)
-    for (fold = 0; fold < k_folds_; fold++) {
+    #pragma omp parallel for
+    for (int fold = 0; fold < k_folds_; fold++) {
         DataFrame train_data = folds[fold][0];
         DataFrame val_data = folds[fold][1];
         
@@ -120,16 +122,6 @@ CVResult CrossValidator::validateSingleHyperparameter(const HyperparameterSet& p
         // Calculate accuracy for this fold
         double fold_accuracy = accuracy(true_labels, predictions);
         fold_scores[fold] = fold_accuracy;
-        
-        // Optional: Print progress from master thread only
-        #pragma omp master
-        {
-            static int completed_folds = 0;
-            completed_folds++;
-            if (completed_folds == 1) {
-                std::cout << " [Parallel CV: " << omp_get_num_threads() << " threads]" << std::flush;
-            }
-        }
     }
     
     // Calculate mean and standard deviation
