@@ -4,13 +4,13 @@
 #include <vector>
 #include <iomanip>
 
-// Include your existing modules
-#include "src/datasets.cpp"
-#include "src/losses.cpp"
-#include "src/metrics.cpp"
-#include "src/tree_node.cpp"
-#include "src/decision_tree.cpp"
-#include "src/cv.cpp"  // Include the new CV module
+// Include the PARALLEL modules (decision tree + CV)
+#include "src-openmp/datasets.cpp"
+#include "src-openmp/losses.cpp"
+#include "src-openmp/metrics.cpp"
+#include "src-openmp/tree_node.cpp"
+#include "src-openmp/decision_tree.cpp"
+#include "src-openmp/cv.cpp"  // Include the parallel CV module
 
 void writeCVResultsToCSV(const std::vector<CVResult>& results, const std::string& filename) {
     std::ofstream file(filename);
@@ -20,7 +20,7 @@ void writeCVResultsToCSV(const std::vector<CVResult>& results, const std::string
     
     // Write data
     for (const auto& r : results) {
-        file << "serial_cv,"
+        file << "parallel_cv,"
              << r.dataset << ","
              << r.max_depth << ","
              << std::fixed << std::setprecision(4) << r.cv_time_ms << ","
@@ -45,7 +45,7 @@ void writeCVResultsToCSV(const std::vector<CVResult>& results, const std::string
 }
 
 std::vector<CVResult> testDatasetCV(const std::string& dataset_path, const std::string& dataset_name) {
-    std::cout << "\n=== Testing " << dataset_name << " Dataset with Cross-Validation ===" << std::endl;
+    std::cout << "\n=== Testing " << dataset_name << " Dataset with Parallel Cross-Validation ===" << std::endl;
     
     // Load dataset
     DataLoader loader(dataset_path);
@@ -53,23 +53,23 @@ std::vector<CVResult> testDatasetCV(const std::string& dataset_path, const std::
     
     std::cout << "Dataset loaded: " << df.length() << " rows, " << df.width() << " columns" << std::endl;
     
-    // Create CrossValidator with 4 folds
+    // Create CrossValidator with 4 folds (perfect for 4 threads)
     CrossValidator cv(df, 4, 42, false);  // 4 folds, seed=42, classification
     
     // Define tree depths to test
-    std::vector<int> depths = {1, 2, 3, 4, 5, 10, 15, 20, 50, 100, 200, 500};
+    std::vector<int> depths = {1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20};
     
     std::vector<CVResult> results;
     
     // Run cross-validation benchmarks
     for (int depth : depths) {
         try {
-            std::cout << "Testing SERIAL CV with depth=" << depth << "..." << std::flush;
+            std::cout << "Testing PARALLEL CV with depth=" << depth << "..." << std::flush;
             
             // Start timing
             auto start = std::chrono::high_resolution_clock::now();
             
-            // Perform 4-fold cross-validation using the CV module
+            // Perform 4-fold cross-validation using PARALLEL CV (each fold on separate thread)
             CVResult cv_result = cv.validateDepth(depth, dataset_name);
             
             // End timing
@@ -102,8 +102,9 @@ std::vector<CVResult> testDatasetCV(const std::string& dataset_path, const std::
 }
 
 int main() {
-    std::cout << "=== SERIAL Cross-Validation Benchmark (Dual Dataset) ===" << std::endl;
-    std::cout << "Using modular CV implementation with 4-fold cross-validation" << std::endl;
+    std::cout << "=== PARALLEL Cross-Validation Benchmark (Dual Dataset) ===" << std::endl;
+    std::cout << "Using parallel fold execution with 4-fold cross-validation" << std::endl;
+    std::cout << "Configuration: Parallel Tree + Parallel CV Folds" << std::endl;
     
     std::vector<CVResult> all_results;
     
@@ -116,10 +117,10 @@ int main() {
     all_results.insert(all_results.end(), hmeq_results.begin(), hmeq_results.end());
     
     // Save combined results
-    writeCVResultsToCSV(all_results, "cv_results_serial.csv");
+    writeCVResultsToCSV(all_results, "cv_results_parallel.csv");
     
     // Print summary statistics
-    std::cout << "\n=== SERIAL Cross-Validation Overall Summary ===" << std::endl;
+    std::cout << "\n=== PARALLEL Cross-Validation Overall Summary ===" << std::endl;
     std::cout << "Total CV tests: " << all_results.size() << std::endl;
     
     // Separate summaries by dataset
@@ -160,9 +161,9 @@ int main() {
         }
     }
     
-    std::cout << "\nSERIAL Cross-Validation benchmark completed!" << std::endl;
-    std::cout << "Results saved to cv_results_serial.csv" << std::endl;
-    std::cout << "Ready for parallel CV comparison (4 folds = 4 threads)" << std::endl;
+    std::cout << "\nPARALLEL Cross-Validation benchmark completed!" << std::endl;
+    std::cout << "Results saved to cv_results_parallel.csv" << std::endl;
+    std::cout << "Compare with cv_results_serial.csv to see fold-parallelization speedup!" << std::endl;
     
     return 0;
 }
