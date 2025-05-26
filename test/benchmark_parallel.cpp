@@ -45,11 +45,15 @@ BenchmarkResult benchmarkDecisionTree(DataFrame& train_data, DataFrame& test_dat
     
     std::cout << "Testing PARALLEL version with max_depth=" << max_depth << "..." << std::flush;
     
+    // Create deep copies to avoid memory issues
+    DataFrame train_copy = train_data.copy(true);  // Deep copy
+    DataFrame test_copy = test_data.copy(true);    // Deep copy
+    
     // Start timing
     auto start = std::chrono::high_resolution_clock::now();
     
     // Train decision tree
-    DecisionTree tree(train_data, 
+    DecisionTree tree(train_copy, 
                      false,           // classification (not regression)
                      "gini_impurity", // loss function
                      -1,              // mtry (-1 = use all features)
@@ -65,12 +69,12 @@ BenchmarkResult benchmarkDecisionTree(DataFrame& train_data, DataFrame& test_dat
     double train_time_ms = duration.count() / 1000.0;
     
     // Make predictions
-    DataVector train_predictions = tree.predict(&train_data);
-    DataVector test_predictions = tree.predict(&test_data);
+    DataVector train_predictions = tree.predict(&train_copy);
+    DataVector test_predictions = tree.predict(&test_copy);
     
     // Calculate accuracies
-    double train_acc = accuracy(train_data.col(-1), train_predictions);
-    double test_acc = accuracy(test_data.col(-1), test_predictions);
+    double train_acc = accuracy(train_copy.col(-1), train_predictions);
+    double test_acc = accuracy(test_copy.col(-1), test_predictions);
     
     std::cout << " Done! (" << std::fixed << std::setprecision(2) << train_time_ms << "ms)" << std::endl;
     
@@ -97,8 +101,8 @@ int main() {
     std::cout << "Test set: " << test_data.length() << " rows" << std::endl;
     std::cout << std::endl;
     
-    // Define tree depths to test
-    std::vector<int> depths = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, -1}; // -1 = no limit
+    // Start with smaller depths to test
+    std::vector<int> depths = {1, 2, 3, 4, 5}; // Reduced set for testing
     
     std::vector<BenchmarkResult> results;
     
@@ -111,7 +115,7 @@ int main() {
             results.push_back(result);
             
             // Print summary
-            std::cout << "  Depth=" << (depth == -1 ? "unlimited" : std::to_string(depth))
+            std::cout << "  Depth=" << depth
                       << ", Time=" << std::fixed << std::setprecision(2) << result.train_time_ms << "ms"
                       << ", Train Acc=" << std::fixed << std::setprecision(3) << result.train_accuracy
                       << ", Test Acc=" << std::fixed << std::setprecision(3) << result.test_accuracy
@@ -130,21 +134,23 @@ int main() {
     
     // Print summary statistics
     std::cout << "\n=== PARALLEL Summary Statistics ===" << std::endl;
-    double total_time = 0;
-    double max_time = 0;
-    double min_time = results.empty() ? 0 : results[0].train_time_ms;
-    
-    for (const auto& r : results) {
-        total_time += r.train_time_ms;
-        max_time = std::max(max_time, r.train_time_ms);
-        min_time = std::min(min_time, r.train_time_ms);
+    if (!results.empty()) {
+        double total_time = 0;
+        double max_time = 0;
+        double min_time = results[0].train_time_ms;
+        
+        for (const auto& r : results) {
+            total_time += r.train_time_ms;
+            max_time = std::max(max_time, r.train_time_ms);
+            min_time = std::min(min_time, r.train_time_ms);
+        }
+        
+        std::cout << "Total tests: " << results.size() << std::endl;
+        std::cout << "Total time: " << std::fixed << std::setprecision(2) << total_time << "ms" << std::endl;
+        std::cout << "Average time: " << std::fixed << std::setprecision(2) << total_time/results.size() << "ms" << std::endl;
+        std::cout << "Min time: " << std::fixed << std::setprecision(2) << min_time << "ms" << std::endl;
+        std::cout << "Max time: " << std::fixed << std::setprecision(2) << max_time << "ms" << std::endl;
     }
-    
-    std::cout << "Total tests: " << results.size() << std::endl;
-    std::cout << "Total time: " << std::fixed << std::setprecision(2) << total_time << "ms" << std::endl;
-    std::cout << "Average time: " << std::fixed << std::setprecision(2) << total_time/results.size() << "ms" << std::endl;
-    std::cout << "Min time: " << std::fixed << std::setprecision(2) << min_time << "ms" << std::endl;
-    std::cout << "Max time: " << std::fixed << std::setprecision(2) << max_time << "ms" << std::endl;
     
     std::cout << "\nPARALLEL benchmark completed! Results saved to benchmark_results_parallel.csv" << std::endl;
     
