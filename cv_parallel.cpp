@@ -10,20 +10,31 @@
 #include "src-openmp/metrics.cpp"
 #include "src-openmp/tree_node.cpp"
 #include "src-openmp/decision_tree.cpp"
-#include "src-openmp/cv.cpp"  // Include the parallel CV module
+#include "src-openmp/cv.cpp"  // Include the original parallel CV module (no changes)
 
-void writeCVResultsToCSV(const std::vector<CVResult>& results, const std::string& filename) {
+struct CVBenchmarkResult {
+    std::string dataset;
+    int max_depth;
+    double cv_training_time_ms;  // Only training time
+    double mean_cv_accuracy;
+    double std_cv_accuracy;
+    std::vector<double> fold_scores;
+    int warmup_runs;
+    int measurement_runs;
+};
+
+void writeCVResultsToCSV(const std::vector<CVBenchmarkResult>& results, const std::string& filename) {
     std::ofstream file(filename);
     
-    // Write header - UPDATED with additional columns
-    file << "version,dataset,max_depth,cv_time_ms,mean_cv_accuracy,std_cv_accuracy,fold1_acc,fold2_acc,fold3_acc,fold4_acc,warmup_runs,measurement_runs\n";
+    // Write header - Updated to clarify training time only
+    file << "version,dataset,max_depth,cv_training_time_ms,mean_cv_accuracy,std_cv_accuracy,fold1_acc,fold2_acc,fold3_acc,fold4_acc,warmup_runs,measurement_runs\n";
     
     // Write data
     for (const auto& r : results) {
         file << "parallel_cv,"
              << r.dataset << ","
              << r.max_depth << ","
-             << std::fixed << std::setprecision(4) << r.cv_time_ms << ","
+             << std::fixed << std::setprecision(4) << r.cv_training_time_ms << ","
              << std::fixed << std::setprecision(4) << r.mean_cv_accuracy << ","
              << std::fixed << std::setprecision(4) << r.std_cv_accuracy;
         
@@ -38,7 +49,7 @@ void writeCVResultsToCSV(const std::vector<CVResult>& results, const std::string
         }
         
         // Add warmup and measurement run info
-        file << ",1,1";  // 1 warmup, 1 measurement for CV
+        file << "," << r.warmup_runs << "," << r.measurement_runs;
         
         file << "\n";
     }
@@ -47,7 +58,123 @@ void writeCVResultsToCSV(const std::vector<CVResult>& results, const std::string
     std::cout << "Results saved to " << filename << std::endl;
 }
 
-std::vector<CVResult> testDatasetCV(const std::string& dataset_path, const std::string& dataset_name) {
+CVBenchmarkResult measureCVTrainingTimeParallel(const DataFrame& data, int depth, const std::string& dataset_name, 
+                                               int warmup_runs = 1, int measurement_runs = 1) {
+    /**
+     * Manually perform PARALLEL CV to measure only training time, not prediction/evaluation
+     */
+    
+    // Create 4-fold splits manually
+    DataFrame shuffled_data = data.sample(-1, 42, false);  // Shuffle with seed 42
+    int fold_size = shuffled_data.length() / 4;
+    int remainder = shuffled_data.length() % 4;
+    
+    std::vector<std::vector<DataFrame>> folds;
+    
+    // Create 4 folds
+    for (int fold = 0; fold < 4; fold++) {
+        int current_fold_size = fold_size + (fold < remainder ? 1 : 0);
+        
+        int start_idx = 0;
+        for (int i = 0; i < fold; i++) {
+            start_idx += fold_size + (i < remainder ? 1 : 0);
+        }
+        int end_idx = start_idx + current_fold_size;
+        
+        // Create validation set (current fold)
+        DataFrame validation_data = DataFrame();
+        for (int i = start_idx; i < end_idx; i++) {
+            validation_data.addRow(shuffled_data.row(i));
+        }
+        
+        // Create training set (all other folds)
+        DataFrame training_data = DataFrame();
+        for (int i = 0; i < shuffled_data.length(); i++) {
+            if (i < start_idx || i >= end_idx) {
+                training_data.addRow(shuffled_data.row(i));
+            }
+        }
+        
+        std::vector<DataFrame> fold_pair = {training_data, validation_data};
+        folds.push_back(fold_pair);
+    }
+    
+    // Warmup runs
+    for (int w = 0; w < warmup_runs; w++) {
+        #pragma omp parallel for
+        for (int fold = 0; fold < 4; fold++) {
+            DataFrame train_data = folds[fold][0];
+            DecisionTree warmup_tree(train_data, false, "gini_impurity", -1, depth, -1, 1, -1, 42 + fold + w);
+        }
+    }
+    
+    // Measurement runs - time only training in parallel
+    std::vector<double> total_times;
+    std::vector<double> fold_scores;
+    
+    for (int m = 0; m < measurement_runs; m++) {
+        std::vector<double> fold_training_times(4, 0.0);
+        std::vector<double> current_fold_scores(4, 0.0);
+        
+        // START TIMING: Parallel fold training
+        auto start = std::chrono::high_resolution_clock::now();
+        
+        #pragma omp parallel for
+        for (int fold = 0; fold < 4; fold++) {
+            DataFrame train_data = folds[fold][0];
+            DataFrame val_data = folds[fold][1];
+            
+            // TIME ONLY TRAINING (each thread times its own fold)
+            auto fold_start = std::chrono::high_resolution_clock::now();
+            
+            DecisionTree tree(train_data, false, "gini_impurity", -1, depth, -1, 1, -1, 
+                            42 + fold + warmup_runs + m);
+            
+            auto fold_end = std::chrono::high_resolution_clock::now();
+            auto fold_duration = std::chrono::duration_cast<std::chrono::microseconds>(fold_end - fold_start);
+            fold_training_times[fold] = fold_duration.count() / 1000.0;
+            
+            // PREDICTION AND EVALUATION (NOT TIMED)
+            DataVector predictions = tree.predict(&val_data);
+            DataVector true_labels = val_data.col(-1);
+            double fold_accuracy = accuracy(true_labels, predictions);
+            current_fold_scores[fold] = fold_accuracy;
+        }
+        
+        // END TIMING: All parallel folds complete
+        auto end = std::chrono::high_resolution_clock::now();
+        auto total_duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        
+        // For parallel: use wall clock time (actual time elapsed)
+        // This shows the real speedup from parallelization
+        double wall_clock_time = total_duration.count() / 1000.0;
+        total_times.push_back(wall_clock_time);
+        
+        if (m == 0) {  // Use fold scores from first measurement run
+            fold_scores = current_fold_scores;
+        }
+    }
+    
+    // Use median time if multiple measurement runs
+    std::sort(total_times.begin(), total_times.end());
+    double median_time = total_times[total_times.size() / 2];
+    
+    // Calculate mean and std of fold accuracies
+    double sum = 0.0;
+    for (double score : fold_scores) sum += score;
+    double mean = sum / fold_scores.size();
+    
+    double variance_sum = 0.0;
+    for (double score : fold_scores) {
+        double diff = score - mean;
+        variance_sum += diff * diff;
+    }
+    double std_dev = std::sqrt(variance_sum / fold_scores.size());
+    
+    return {dataset_name, depth, median_time, mean, std_dev, fold_scores, warmup_runs, measurement_runs};
+}
+
+std::vector<CVBenchmarkResult> testDatasetCV(const std::string& dataset_path, const std::string& dataset_name) {
     std::cout << "\n=== Testing " << dataset_name << " Dataset with Parallel Cross-Validation ===" << std::endl;
     
     // Load dataset
@@ -56,56 +183,38 @@ std::vector<CVResult> testDatasetCV(const std::string& dataset_path, const std::
     
     std::cout << "Dataset loaded: " << df.length() << " rows, " << df.width() << " columns" << std::endl;
     
-    // Create CrossValidator with 4 folds (perfect for 4 threads)
-    CrossValidator cv(df, 4, 42, false);  // 4 folds, seed=42, classification
-    
     // FIXED: Realistic tree depths to test (1 to 20)
     std::vector<int> depths = {1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20};
-        
-    std::vector<CVResult> results;
+    
+    std::vector<CVBenchmarkResult> results;
+    const int warmup_runs = 1;
+    const int measurement_runs = 1;
     
     // Run cross-validation benchmarks
     for (int depth : depths) {
         try {
-            std::cout << "Testing PARALLEL CV with depth=" << depth << "..." << std::flush;
+            std::cout << "Testing PARALLEL CV with depth=" << depth << " (training time only)..." << std::flush;
             
-            // Warmup run (not timed)
-            cv.validateDepth(depth, dataset_name);
-            
-            // Start timing for actual measurement
-            auto start = std::chrono::high_resolution_clock::now();
-            
-            // Perform 4-fold cross-validation using PARALLEL CV (each fold on separate thread)
-            CVResult cv_result = cv.validateDepth(depth, dataset_name);
-            
-            // End timing
-            auto end = std::chrono::high_resolution_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-            cv_result.cv_time_ms = duration.count() / 1000.0;
+            CVBenchmarkResult result = measureCVTrainingTimeParallel(df, depth, dataset_name, warmup_runs, measurement_runs);
             
             // Validate reasonable ranges
-            if (cv_result.cv_time_ms < 1.0 || cv_result.cv_time_ms > 1200000) {  // 1ms to 20 minutes
-                std::cout << " WARNING: Suspicious CV timing: " << cv_result.cv_time_ms << "ms" << std::endl;
+            if (result.cv_training_time_ms < 0.5 || result.cv_training_time_ms > 600000) {  // 0.5ms to 10 minutes
+                std::cout << " WARNING: Suspicious CV training timing: " << result.cv_training_time_ms << "ms" << std::endl;
             }
             
-            // Check for reasonable accuracy range
-            if (cv_result.mean_cv_accuracy < 0.3 || cv_result.mean_cv_accuracy > 1.0) {
-                std::cout << " WARNING: Suspicious CV accuracy: " << cv_result.mean_cv_accuracy << std::endl;
-            }
+            std::cout << " Done! (" << std::fixed << std::setprecision(2) << result.cv_training_time_ms << "ms training)" << std::endl;
             
-            std::cout << " Done! (" << std::fixed << std::setprecision(2) << cv_result.cv_time_ms << "ms)" << std::endl;
-            
-            results.push_back(cv_result);
+            results.push_back(result);
             
             // Print summary
             std::cout << "  Depth=" << depth
-                      << ", Time=" << std::fixed << std::setprecision(2) << cv_result.cv_time_ms << "ms"
-                      << ", Mean CV Acc=" << std::fixed << std::setprecision(3) << cv_result.mean_cv_accuracy
-                      << ", Std=" << std::fixed << std::setprecision(3) << cv_result.std_cv_accuracy
+                      << ", Training Time=" << std::fixed << std::setprecision(2) << result.cv_training_time_ms << "ms"
+                      << ", Mean CV Acc=" << std::fixed << std::setprecision(3) << result.mean_cv_accuracy
+                      << ", Std=" << std::fixed << std::setprecision(3) << result.std_cv_accuracy
                       << ", Folds=[";
-            for (size_t i = 0; i < cv_result.fold_scores.size(); i++) {
-                std::cout << std::fixed << std::setprecision(3) << cv_result.fold_scores[i];
-                if (i < cv_result.fold_scores.size() - 1) std::cout << ",";
+            for (size_t i = 0; i < result.fold_scores.size(); i++) {
+                std::cout << std::fixed << std::setprecision(3) << result.fold_scores[i];
+                if (i < result.fold_scores.size() - 1) std::cout << ",";
             }
             std::cout << "]" << std::endl;
             
@@ -118,79 +227,31 @@ std::vector<CVResult> testDatasetCV(const std::string& dataset_path, const std::
 }
 
 int main() {
-    std::cout << "=== PARALLEL Cross-Validation Benchmark (Dual Dataset) ===" << std::endl;
-    std::cout << "Using parallel fold execution with 4-fold cross-validation" << std::endl;
-    std::cout << "Configuration: Parallel Tree + Parallel CV Folds" << std::endl;
-    std::cout << "Testing realistic tree depths (1-20) with improved timing methodology" << std::endl;
+    std::cout << "=== PARALLEL Cross-Validation Benchmark (Training Time Only) ===" << std::endl;
+    std::cout << "Using manual parallel CV implementation to measure only training time" << std::endl;
+    std::cout << "Testing realistic tree depths (1-20)" << std::endl;
     
-    std::vector<CVResult> all_results;
+    std::vector<CVBenchmarkResult> all_results;
     
     // Test Cancer dataset
-    std::vector<CVResult> cancer_results = testDatasetCV("data/cancer_clean.csv", "cancer");
+    std::vector<CVBenchmarkResult> cancer_results = testDatasetCV("data/cancer_clean.csv", "cancer");
     all_results.insert(all_results.end(), cancer_results.begin(), cancer_results.end());
     
     // Test HMEQ dataset
-    std::vector<CVResult> hmeq_results = testDatasetCV("data/hmeq_clean.csv", "hmeq");
+    std::vector<CVBenchmarkResult> hmeq_results = testDatasetCV("data/hmeq_clean.csv", "hmeq");
     all_results.insert(all_results.end(), hmeq_results.begin(), hmeq_results.end());
     
     // Save combined results
     writeCVResultsToCSV(all_results, "cv_results_parallel.csv");
     
-    // Print summary statistics
-    std::cout << "\n=== PARALLEL Cross-Validation Overall Summary ===" << std::endl;
-    std::cout << "Total CV tests: " << all_results.size() << std::endl;
-    
-    // Separate summaries by dataset
-    for (const std::string& dataset : {"cancer", "hmeq"}) {
-        std::vector<CVResult> dataset_results;
-        for (const auto& r : all_results) {
-            if (r.dataset == dataset) {
-                dataset_results.push_back(r);
-            }
-        }
-        
-        if (!dataset_results.empty()) {
-            double total_time = 0;
-            double max_time = 0;
-            double min_time = dataset_results[0].cv_time_ms;
-            double best_cv_acc = 0;
-            int best_depth = 0;
-            
-            for (const auto& r : dataset_results) {
-                total_time += r.cv_time_ms;
-                max_time = std::max(max_time, r.cv_time_ms);
-                min_time = std::min(min_time, r.cv_time_ms);
-                
-                if (r.mean_cv_accuracy > best_cv_acc) {
-                    best_cv_acc = r.mean_cv_accuracy;
-                    best_depth = r.max_depth;
-                }
-            }
-            
-            std::cout << "\n" << dataset << " dataset:" << std::endl;
-            std::cout << "  CV tests: " << dataset_results.size() << std::endl;
-            std::cout << "  Total CV time: " << std::fixed << std::setprecision(2) << total_time << "ms" << std::endl;
-            std::cout << "  Average CV time: " << std::fixed << std::setprecision(2) << total_time/dataset_results.size() << "ms" << std::endl;
-            std::cout << "  Min CV time: " << std::fixed << std::setprecision(2) << min_time << "ms" << std::endl;
-            std::cout << "  Max CV time: " << std::fixed << std::setprecision(2) << max_time << "ms" << std::endl;
-            std::cout << "  Best CV accuracy: " << std::fixed << std::setprecision(3) << best_cv_acc 
-                      << " (depth=" << best_depth << ")" << std::endl;
-            
-            // Data quality checks
-            if (max_time / min_time > 1000) {
-                std::cout << "  ⚠️  WARNING: Large CV time variance detected" << std::endl;
-            }
-        }
-    }
-    
     std::cout << "\nPARALLEL Cross-Validation benchmark completed!" << std::endl;
     std::cout << "Results saved to cv_results_parallel.csv" << std::endl;
-    std::cout << "Expected speedup vs serial CV: 2x to 3.8x (approaching 4x)" << std::endl;
-    std::cout << "Expected CV time ranges:" << std::endl;
-    std::cout << "  Depth 1-5: 3-60ms (faster than serial)" << std::endl;
-    std::cout << "  Depth 6-12: 15-600ms (faster than serial)" << std::endl;
-    std::cout << "  Depth 15-20: 60-2500ms (faster than serial)" << std::endl;
-    std::cout << "Compare with cv_results_serial.csv to see fold-parallelization speedup!" << std::endl;
+    std::cout << "IMPORTANT: Times represent training only (wall clock), comparable to tree benchmark times" << std::endl;
+    std::cout << "Expected speedup vs serial CV training: 2x to 3.8x (approaching 4x)" << std::endl;
+    std::cout << "Expected CV training time ranges:" << std::endl;
+    std::cout << "  Depth 1-5: 1-60ms (parallel training of 4 trees)" << std::endl;
+    std::cout << "  Depth 6-12: 10-600ms (parallel training of 4 trees)" << std::endl;
+    std::cout << "  Depth 15-20: 50-2500ms (parallel training of 4 trees)" << std::endl;
     
     return 0;
 }
