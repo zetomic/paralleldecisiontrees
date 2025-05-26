@@ -277,9 +277,13 @@ std::pair<int,double> DecisionTree::findBestSplit(TreeNode *node)
             std::swap(shuf_inds[i], shuf_inds[i+(std::rand() % (this->num_features_-i))]);
         }
     }
-    // Can't pre-allocate since we don't know the number of unique values per column
-    std::vector<double> losses;
-    std::vector<std::pair<int, double>> cols_splits;
+    
+    // Initialize best split tracking
+    bool first_pass = true;
+    int best_column = -1;
+    double best_threshold = -1.0;
+    double best_loss = 0.0;
+    
     // Explore possible splits:
     for (int i = 0; i < this->mtry_; i++){
         int col = shuf_inds[i];
@@ -287,35 +291,39 @@ std::pair<int,double> DecisionTree::findBestSplit(TreeNode *node)
         // Remove duplicates:
         std::sort(col_vals.begin(), col_vals.end());
         col_vals.erase(std::unique(col_vals.begin(), col_vals.end()), col_vals.end());
-        int j;
-        #pragma omp parallel shared(losses, cols_splits, col) private(j)
-        {        
-            // For each unique column value, try that col and val as split, get score:
-            #pragma omp for schedule(dynamic)
-            for (j = 0; j < col_vals.size()-1; j++){
-                // Don't split on last value (because it will produce empty `right`).
-                double val = col_vals[j];
-                // But splitting on first value works as <= means left won't be empty
-                // Split dataset using current column and threshold, score, and update if best:
-                // equal_goes_left=true.
-                std::vector<DataFrame> dataset_splits = dataframe.split(col, val, true);
-                double loss = this->calculateSplitLoss(&dataset_splits[0], &dataset_splits[1]);
-                losses.push_back(loss);
-                cols_splits.push_back(std::make_pair(col, val));
+        
+        // THREAD-SAFE VERSION: Use reduction instead of shared vectors
+        int local_best_col = -1;
+        double local_best_threshold = -1.0;
+        double local_best_loss = 0.0;
+        bool local_first_pass = true;
+        
+        #pragma omp parallel for schedule(dynamic) shared(col_vals, col, dataframe) reduction(min:local_best_loss) private(local_best_col, local_best_threshold, local_first_pass)
+        for (int j = 0; j < (int)col_vals.size()-1; j++){
+            // Don't split on last value (because it will produce empty `right`).
+            double val = col_vals[j];
+            // Split dataset using current column and threshold, score:
+            std::vector<DataFrame> dataset_splits = dataframe.split(col, val, true);
+            double loss = this->calculateSplitLoss(&dataset_splits[0], &dataset_splits[1]);
+            
+            // Thread-local comparison (each thread tracks its own best)
+            if (local_first_pass || loss < local_best_loss) {
+                local_first_pass = false;
+                local_best_col = col;
+                local_best_threshold = val;
+                local_best_loss = loss;
             }
         }
+        
+        // Update global best from this column's best
+        if (first_pass || local_best_loss < best_loss) {
+            first_pass = false;
+            best_column = local_best_col;
+            best_threshold = local_best_threshold;
+            best_loss = local_best_loss;
+        }
     }
-    int best_column = -1;
-    double best_threshold = -1.0;
-    // Find lowest loss combination and return it
-    if (losses.size() > 0)
-    {
-        int ind_min = std::min_element(losses.begin(), losses.end()) - losses.begin();
-        best_column = cols_splits[ind_min].first;
-        best_threshold = cols_splits[ind_min].second;
-    }
-    // Sanity check that function did something
-    // assert(best_column >= 0);
+    
     split = std::make_pair(best_column, best_threshold);
     return split;
 }
