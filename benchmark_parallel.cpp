@@ -98,7 +98,7 @@ int main() {
     std::cout << std::endl;
     
     // Define tree depths to test
-    std::vector<int> depths = {1, 2, 3, 4, 5}; 
+    std::vector<int> depths = {1, 2, 3, 4, 5,6,7,8,9,10,25,50,100,200,500}; 
     
     std::vector<BenchmarkResult> results;
     
