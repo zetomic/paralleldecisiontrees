@@ -19,13 +19,15 @@ struct BenchmarkResult {
     double test_accuracy;
     int tree_size;
     int tree_height;
+    int warmup_runs;
+    int measurement_runs;
 };
 
 void writeResultsToCSV(const std::vector<BenchmarkResult>& results, const std::string& filename) {
     std::ofstream file(filename);
     
     // Write header
-    file << "version,dataset,max_depth,train_time_ms,train_accuracy,test_accuracy,tree_size,tree_height\n";
+    file << "version,dataset,max_depth,train_time_ms,train_accuracy,test_accuracy,tree_size,tree_height,warmup_runs,measurement_runs\n";
     
     // Write data
     for (const auto& r : results) {
@@ -36,11 +38,40 @@ void writeResultsToCSV(const std::vector<BenchmarkResult>& results, const std::s
              << std::fixed << std::setprecision(4) << r.train_accuracy << ","
              << std::fixed << std::setprecision(4) << r.test_accuracy << ","
              << r.tree_size << ","
-             << r.tree_height << "\n";
+             << r.tree_height << ","
+             << r.warmup_runs << ","
+             << r.measurement_runs << "\n";
     }
     
     file.close();
     std::cout << "Results saved to " << filename << std::endl;
+}
+
+double measureTrainingTime(const DataFrame& train_data, int depth, int warmup_runs = 2, int measurement_runs = 3) {
+    /**
+     * Measure training time with warmup runs to avoid cold start effects
+     */
+    
+    // Warmup runs (not timed)
+    for (int i = 0; i < warmup_runs; i++) {
+        DecisionTree warmup_tree(train_data, false, "gini_impurity", -1, depth, -1, 1, -1, 42 + i);
+    }
+    
+    // Measurement runs (timed)
+    std::vector<double> times;
+    for (int i = 0; i < measurement_runs; i++) {
+        auto start = std::chrono::high_resolution_clock::now();
+        
+        DecisionTree tree(train_data, false, "gini_impurity", -1, depth, -1, 1, -1, 42 + warmup_runs + i);
+        
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        times.push_back(duration.count() / 1000.0);
+    }
+    
+    // Return median time (more robust than mean)
+    std::sort(times.begin(), times.end());
+    return times[times.size() / 2];
 }
 
 std::vector<BenchmarkResult> testDataset(const std::string& dataset_path, const std::string& dataset_name) {
@@ -60,34 +91,23 @@ std::vector<BenchmarkResult> testDataset(const std::string& dataset_path, const 
     std::cout << "Train set: " << train_data.length() << " rows" << std::endl;
     std::cout << "Test set: " << test_data.length() << " rows" << std::endl;
     
-    // Define tree depths to test
-    std::vector<int> depths = {1, 2, 3, 4, 5, 10, 15, 20, 50, 100, 200, 500};
+    // FIXED: Realistic tree depths to test (1 to 20)
+    std::vector<int> depths = {1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20};
     
     std::vector<BenchmarkResult> results;
+    const int warmup_runs = 2;
+    const int measurement_runs = 3;
     
     // Run benchmarks
     for (int depth : depths) {
         try {
             std::cout << "Testing SERIAL with depth=" << depth << "..." << std::flush;
             
-            // Start timing
-            auto start = std::chrono::high_resolution_clock::now();
+            // Measure training time with warmup
+            double train_time_ms = measureTrainingTime(train_data, depth, warmup_runs, measurement_runs);
             
-            // Train decision tree
-            DecisionTree tree(train_data, 
-                             false,           // classification (not regression)
-                             "gini_impurity", // loss function
-                             -1,              // mtry (-1 = use all features)
-                             depth,           // max_height
-                             -1,              // max_leaves (no limit)
-                             1,               // min_obs (minimum 1 observation per leaf)
-                             -1,              // max_prop (no limit)
-                             42);             // seed for reproducibility
-            
-            // End timing
-            auto end = std::chrono::high_resolution_clock::now();
-            auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-            double train_time_ms = duration.count() / 1000.0;
+            // Train final tree for accuracy measurement
+            DecisionTree tree(train_data, false, "gini_impurity", -1, depth, -1, 1, -1, 42);
             
             // Make predictions
             DataVector train_predictions = tree.predict(&train_data);
@@ -97,10 +117,15 @@ std::vector<BenchmarkResult> testDataset(const std::string& dataset_path, const 
             double train_acc = accuracy(train_data.col(-1), train_predictions);
             double test_acc = accuracy(test_data.col(-1), test_predictions);
             
+            // Validate reasonable ranges
+            if (train_time_ms < 0.01 || train_time_ms > 300000) {  // 0.01ms to 5 minutes
+                std::cout << " WARNING: Suspicious timing: " << train_time_ms << "ms" << std::endl;
+            }
+            
             std::cout << " Done! (" << std::fixed << std::setprecision(2) << train_time_ms << "ms)" << std::endl;
             
             BenchmarkResult result = {dataset_name, depth, train_time_ms, train_acc, test_acc, 
-                                    tree.getSize(), tree.getHeight()};
+                                    tree.getSize(), tree.getHeight(), warmup_runs, measurement_runs};
             results.push_back(result);
             
             // Print summary
@@ -121,6 +146,7 @@ std::vector<BenchmarkResult> testDataset(const std::string& dataset_path, const 
 
 int main() {
     std::cout << "=== SERIAL Decision Tree Performance Benchmark (Dual Dataset) ===" << std::endl;
+    std::cout << "Testing realistic tree depths (1-20) with improved timing methodology" << std::endl;
     
     std::vector<BenchmarkResult> all_results;
     
@@ -165,10 +191,19 @@ int main() {
             std::cout << "  Average time: " << std::fixed << std::setprecision(2) << total_time/dataset_results.size() << "ms" << std::endl;
             std::cout << "  Min time: " << std::fixed << std::setprecision(2) << min_time << "ms" << std::endl;
             std::cout << "  Max time: " << std::fixed << std::setprecision(2) << max_time << "ms" << std::endl;
+            
+            // Data quality checks
+            if (max_time / min_time > 1000) {
+                std::cout << "  ⚠️  WARNING: Large time variance detected" << std::endl;
+            }
         }
     }
     
     std::cout << "\nSERIAL benchmark completed! Results saved to benchmark_results_serial.csv" << std::endl;
+    std::cout << "Expected time ranges:" << std::endl;
+    std::cout << "  Depth 1-5: 1-50ms" << std::endl;
+    std::cout << "  Depth 6-12: 10-500ms" << std::endl;
+    std::cout << "  Depth 15-20: 50-2000ms" << std::endl;
     
     return 0;
 }

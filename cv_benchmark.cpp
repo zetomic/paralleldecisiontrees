@@ -15,8 +15,8 @@
 void writeCVResultsToCSV(const std::vector<CVResult>& results, const std::string& filename) {
     std::ofstream file(filename);
     
-    // Write header
-    file << "version,dataset,max_depth,cv_time_ms,mean_cv_accuracy,std_cv_accuracy,fold1_acc,fold2_acc,fold3_acc,fold4_acc\n";
+    // Write header - UPDATED with additional columns
+    file << "version,dataset,max_depth,cv_time_ms,mean_cv_accuracy,std_cv_accuracy,fold1_acc,fold2_acc,fold3_acc,fold4_acc,warmup_runs,measurement_runs\n";
     
     // Write data
     for (const auto& r : results) {
@@ -37,6 +37,9 @@ void writeCVResultsToCSV(const std::vector<CVResult>& results, const std::string
             file << ",";
         }
         
+        // Add warmup and measurement run info
+        file << ",1,1";  // 1 warmup, 1 measurement for CV
+        
         file << "\n";
     }
     
@@ -56,8 +59,8 @@ std::vector<CVResult> testDatasetCV(const std::string& dataset_path, const std::
     // Create CrossValidator with 4 folds
     CrossValidator cv(df, 4, 42, false);  // 4 folds, seed=42, classification
     
-    // Define tree depths to test
-    std::vector<int> depths = {1, 2, 3, 4, 5, 10, 15, 20, 50, 100, 200, 500};
+    // FIXED: Realistic tree depths to test (1 to 20)
+    std::vector<int> depths = {1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20};
     
     std::vector<CVResult> results;
     
@@ -66,7 +69,10 @@ std::vector<CVResult> testDatasetCV(const std::string& dataset_path, const std::
         try {
             std::cout << "Testing SERIAL CV with depth=" << depth << "..." << std::flush;
             
-            // Start timing
+            // Warmup run (not timed)
+            cv.validateDepth(depth, dataset_name);
+            
+            // Start timing for actual measurement
             auto start = std::chrono::high_resolution_clock::now();
             
             // Perform 4-fold cross-validation using the CV module
@@ -76,6 +82,16 @@ std::vector<CVResult> testDatasetCV(const std::string& dataset_path, const std::
             auto end = std::chrono::high_resolution_clock::now();
             auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
             cv_result.cv_time_ms = duration.count() / 1000.0;
+            
+            // Validate reasonable ranges
+            if (cv_result.cv_time_ms < 1.0 || cv_result.cv_time_ms > 1200000) {  // 1ms to 20 minutes
+                std::cout << " WARNING: Suspicious CV timing: " << cv_result.cv_time_ms << "ms" << std::endl;
+            }
+            
+            // Check for reasonable accuracy range
+            if (cv_result.mean_cv_accuracy < 0.3 || cv_result.mean_cv_accuracy > 1.0) {
+                std::cout << " WARNING: Suspicious CV accuracy: " << cv_result.mean_cv_accuracy << std::endl;
+            }
             
             std::cout << " Done! (" << std::fixed << std::setprecision(2) << cv_result.cv_time_ms << "ms)" << std::endl;
             
@@ -104,6 +120,7 @@ std::vector<CVResult> testDatasetCV(const std::string& dataset_path, const std::
 int main() {
     std::cout << "=== SERIAL Cross-Validation Benchmark (Dual Dataset) ===" << std::endl;
     std::cout << "Using modular CV implementation with 4-fold cross-validation" << std::endl;
+    std::cout << "Testing realistic tree depths (1-20) with improved timing methodology" << std::endl;
     
     std::vector<CVResult> all_results;
     
@@ -157,11 +174,20 @@ int main() {
             std::cout << "  Max CV time: " << std::fixed << std::setprecision(2) << max_time << "ms" << std::endl;
             std::cout << "  Best CV accuracy: " << std::fixed << std::setprecision(3) << best_cv_acc 
                       << " (depth=" << best_depth << ")" << std::endl;
+            
+            // Data quality checks
+            if (max_time / min_time > 1000) {
+                std::cout << "  ⚠️  WARNING: Large CV time variance detected" << std::endl;
+            }
         }
     }
     
     std::cout << "\nSERIAL Cross-Validation benchmark completed!" << std::endl;
     std::cout << "Results saved to cv_results_serial.csv" << std::endl;
+    std::cout << "Expected CV time ranges:" << std::endl;
+    std::cout << "  Depth 1-5: 10-200ms (4x tree training time)" << std::endl;
+    std::cout << "  Depth 6-12: 50-2000ms (4x tree training time)" << std::endl;
+    std::cout << "  Depth 15-20: 200-8000ms (4x tree training time)" << std::endl;
     std::cout << "Ready for parallel CV comparison (4 folds = 4 threads)" << std::endl;
     
     return 0;
