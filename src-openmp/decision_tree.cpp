@@ -282,7 +282,7 @@ std::pair<int,double> DecisionTree::findBestSplit(TreeNode *node)
     bool first_pass = true;
     int best_column = -1;
     double best_threshold = -1.0;
-    double best_loss = 0.0;
+    double best_loss = std::numeric_limits<double>::max();  // Start with very high loss
     
     // Explore possible splits:
     for (int i = 0; i < this->mtry_; i++){
@@ -292,13 +292,8 @@ std::pair<int,double> DecisionTree::findBestSplit(TreeNode *node)
         std::sort(col_vals.begin(), col_vals.end());
         col_vals.erase(std::unique(col_vals.begin(), col_vals.end()), col_vals.end());
         
-        // THREAD-SAFE VERSION: Use reduction instead of shared vectors
-        int local_best_col = -1;
-        double local_best_threshold = -1.0;
-        double local_best_loss = 0.0;
-        bool local_first_pass = true;
-        
-        #pragma omp parallel for schedule(dynamic) shared(col_vals, col, dataframe) reduction(min:local_best_loss) private(local_best_col, local_best_threshold, local_first_pass)
+        // FIXED PARALLEL VERSION: Use critical sections for thread-safe updates
+        #pragma omp parallel for schedule(dynamic) shared(col_vals, col, dataframe, best_loss, best_column, best_threshold, first_pass)
         for (int j = 0; j < (int)col_vals.size()-1; j++){
             // Don't split on last value (because it will produce empty `right`).
             double val = col_vals[j];
@@ -306,21 +301,16 @@ std::pair<int,double> DecisionTree::findBestSplit(TreeNode *node)
             std::vector<DataFrame> dataset_splits = dataframe.split(col, val, true);
             double loss = this->calculateSplitLoss(&dataset_splits[0], &dataset_splits[1]);
             
-            // Thread-local comparison (each thread tracks its own best)
-            if (local_first_pass || loss < local_best_loss) {
-                local_first_pass = false;
-                local_best_col = col;
-                local_best_threshold = val;
-                local_best_loss = loss;
+            // Thread-safe update of global best
+            #pragma omp critical
+            {
+                if (first_pass || loss < best_loss) {
+                    first_pass = false;
+                    best_column = col;
+                    best_threshold = val;
+                    best_loss = loss;
+                }
             }
-        }
-        
-        // Update global best from this column's best
-        if (first_pass || local_best_loss < best_loss) {
-            first_pass = false;
-            best_column = local_best_col;
-            best_threshold = local_best_threshold;
-            best_loss = local_best_loss;
         }
     }
     
