@@ -34,7 +34,7 @@ echo ""
 
 # Run parallel tree benchmarks
 echo "Running PARALLEL tree benchmarks..."
-for threads in 1 2 3 4; do
+for threads in 2 4 6 8; do
     echo "  → Testing with $threads thread(s)..."
     export OMP_NUM_THREADS=$threads
     ./benchmark_parallel | tee logs/tree_parallel_${threads}t.log
@@ -70,7 +70,7 @@ echo ""
 
 # Run parallel CV benchmarks
 echo "Running PARALLEL cross-validation benchmarks..."
-for threads in 1 2 3 4; do
+for threads in 2 4 6 8; do
     echo "  → Testing with $threads thread(s)..."
     export OMP_NUM_THREADS=$threads
     ./cv_benchmark_parallel | tee logs/cv_parallel_${threads}t.log
